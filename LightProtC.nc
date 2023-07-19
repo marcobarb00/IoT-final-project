@@ -33,17 +33,20 @@ implementation {
   // Variables to store the message to send
   message_t queued_packet;
   uint16_t queue_addr;
-  uint16_t time_delays[7]={61,173,267,371,479,583,689}; //Time delay in milli seconds
+  
+  uint16_t time_delays[9] = {200, 237, 297, 371, 390, 420, 473, 530, 568}; //Time delay in milli seconds
   
   
-  bool route_req_sent=FALSE;
-  bool route_rep_sent=FALSE;
-  
+  bool connect_sent = FALSE;
+  bool connack_sent = FALSE;
+  bool subscribe_sent = FALSE;
+  bool suback_sent = FALSE;
+  bool publish_sent = FALSE;
   
   bool locked;
   
   bool actual_send (uint16_t address, message_t* packet);
-  bool generate_send (uint16_t address, message_t* packet, uint8_t type);
+  bool generate_send (uint16_t address, message_t* packet, uint16_t type);
   
   // communication channels
   communication_channel_t communication_channels[8];
@@ -65,7 +68,6 @@ implementation {
     communication_channel_t communication_channel;
     
   	while(i < 8){
-  	  communication_channel.id = i+2;
   	  communication_channel.status = 0;
   	  communication_channel.subscribed_topic = NOTHING;
   	  
@@ -85,10 +87,24 @@ implementation {
   	
     connect_message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
     
+    connect_message->id = TOS_NODE_ID;
     connect_message->type = CONNECT;
     
     // send the message to node 1 (PANC)
-    generate_send(1, &packet_buf, 2);
+    generate_send(1, &packet_buf, CONNECT);
+  }
+  
+  void send_connack_message(int id){
+  	msg_t *connack_message;
+  	
+  	dbg("radio_pack", "sending a connack message to mote: %d \n", id);
+  	
+    connack_message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
+    
+    connack_message->type = CONNACK;
+    
+    // send the message to node with the id specified
+    generate_send(id, &packet_buf, CONNACK);
   }
   
   void send_subscribe_message(nx_uint16_t topic){
@@ -98,15 +114,16 @@ implementation {
   	
     subscribe_message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
     
+    subscribe_message->id = TOS_NODE_ID;
     subscribe_message->type = SUBSCRIBE;
     subscribe_message->topic = topic;
     
     // send the message to node 1 (PANC)
-    generate_send(1, &packet_buf, 2);
+    generate_send(1, &packet_buf, SUBSCRIBE);
   }
   
   
-  bool generate_send (uint16_t address, message_t* packet, uint8_t type){
+  bool generate_send (uint16_t address, message_t* packet, uint16_t type){
   /*
   * 
   * Function to be used when performing the send after the receive message event.
@@ -122,18 +139,33 @@ implementation {
   	if (call Timer0.isRunning()){
   		return FALSE;
   	}else{
-  	if (type == 1 && !route_req_sent ){
-  		route_req_sent = TRUE;
-  		call Timer0.startOneShot( time_delays[TOS_NODE_ID-1] );
+  	if (type == CONNECT && !connect_sent){
+  		connect_sent = TRUE;
+  		call Timer0.startOneShot(time_delays[TOS_NODE_ID-1]);
   		queued_packet = *packet;
   		queue_addr = address;
-  	}else if (type == 2 && !route_rep_sent){
-  	  	route_rep_sent = TRUE;
-  		call Timer0.startOneShot( time_delays[TOS_NODE_ID-1] );
+  	}else if (type == CONNACK && !connack_sent){
+  	  	connack_sent = TRUE;
+  		call Timer0.startOneShot(time_delays[TOS_NODE_ID-1]);
+  		queued_packet = *packet;
+  		queue_addr = address;
+  	}else if (type == SUBSCRIBE && !subscribe_sent){
+  	  	subscribe_sent = TRUE;
+  		call Timer0.startOneShot(time_delays[TOS_NODE_ID-1]);
+  		queued_packet = *packet;
+  		queue_addr = address;
+  		}else if (type == SUBACK && !suback_sent){
+  	  	suback_sent = TRUE;
+  		call Timer0.startOneShot(time_delays[TOS_NODE_ID-1]);
+  		queued_packet = *packet;
+  		queue_addr = address;
+    }else if (type == PUBLISH && !publish_sent){
+    	publish_sent = TRUE;
+  		call Timer0.startOneShot(time_delays[TOS_NODE_ID-1]);
   		queued_packet = *packet;
   		queue_addr = address;
   	}else if (type == 0){
-  		call Timer0.startOneShot( time_delays[TOS_NODE_ID-1] );
+  		call Timer0.startOneShot(time_delays[TOS_NODE_ID-1]);
   		queued_packet = *packet;
   		queue_addr = address;	
   	}
@@ -199,9 +231,9 @@ implementation {
   
   event void Timer2.fired() {
 	// timer used to wait for acks of subscribe messages
-    dbg("timer", "node %d did not receive a SUBACK in time\n", TOS_NODE_ID);
 	if(subscribe_acked == FALSE){
-		send_subscribe_message(subscribe_topic);
+      dbg("timer", "node %d did not receive a SUBACK in time\n", TOS_NODE_ID);
+      send_subscribe_message(subscribe_topic);
 	}
   }
   
@@ -212,43 +244,73 @@ implementation {
 	}
   }
 
-  event message_t* Receive.receive(message_t* bufPtr, 
-				   void* payload, uint8_t len) {
-	/*
-	* Parse the receive packet.
-	* Implement all the functionalities
-	* Perform the packet send using the generate_send function if needed
-	* Implement the LED logic and print LED status on Debug
-	*/
+  event message_t* Receive.receive(message_t* bufPtr, void* payload, uint8_t len) {
+    msg_t* message = (msg_t*)payload;
+    uint16_t id = message->id;
+    communication_channel_t communication_channel = communication_channels[id-2];
+	
+	if(TOS_NODE_ID == 1){
+	  if(message->type == CONNECT){
+	  	if(communication_channel.status == NOT_CONNECTED){
+	  	  send_connack_message(id);
+	  	}else{
+	  	  dbg("radio_rec", "node %d already connected, dropping connect packet\n", id);
+	  	}
+	  }
+	}else{
+	  if(message->type == CONNACK){
+	    dbg("radio_rec", "CONNACK received\n");
+	    connect_acked = TRUE;
+	  }
+	}
 	
     return bufPtr;
   }
 
   event void AMSend.sendDone(message_t* bufPtr, error_t error) {
     msg_t *message;
-  
+    
     if(error == SUCCESS){      
-	  dbg("radio_send", "Packet sent...\n");
+	  dbg("radio_send", "Packet sent...");
 	  dbg_clear("radio_send", " at time %s \n", sim_time_string());
 	  
 	  message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
 	  
 	  if(message->type == CONNECT){
 	    dbg("radio_send", "packet sent was of type CONNECT\n");
-	  	connect_acked = FALSE;
 	  	
+	  	// reset the connect_sent flag
+		connect_sent = FALSE;
+	  	
+	    connect_acked = FALSE;
+	    
 	  	// wait 1s to receive an ack for the connect message
 	  	call Timer1.startOneShot(1000);
 	  }
 	  
+	  if(message->type == CONNACK){
+	    dbg("radio_send", "packet sent was of type CONNACK\n");
+	  	// reset the connack_sent flag
+		connack_sent = FALSE;
+	  }
+	  
 	  if(message->type == SUBSCRIBE){
 	  	dbg("radio_send", "packet sent was of type SUBSCRIBE\n");
-	  	subscribe_acked = FALSE;
+	  	
+	  	// reset the subscribe_sent flag
+		subscribe_sent = FALSE;
+		
+		subscribe_acked = FALSE;
 	  	
 	  	// wait 1s to receive an ack for the subscribe message
 	  	call Timer2.startOneShot(1000);
 	  }
 	  
+	  if(message->type == SUBACK){
+	    dbg("radio_send", "packet sent was of type SUBACK\n");
+	  	// reset the suback_sent flag
+		suback_sent = FALSE;
+	  }
 	}else
 	  dbg("radio_send", "there was an error sending the packet\n");
 	  
