@@ -1,4 +1,4 @@
-COMPONENT=RadioRouteAppC
+COMPONENT=LightProtAppC
 
 include $(MAKERULES)
 

@@ -28,7 +28,7 @@ module LightProtC @safe() {
 }
 implementation {
 
-  message_t packet;
+  message_t packet_buf;
   
   // Variables to store the message to send
   message_t queued_packet;
@@ -46,19 +46,32 @@ implementation {
   bool generate_send (uint16_t address, message_t* packet, uint8_t type);
   
   // communication channels
-  communication_channel_t comunication_channels[8];
+  communication_channel_t communication_channels[8];
+  
+  // acknowledgement booleans
+  bool connect_acked = FALSE;
+  bool subscribe_acked = FALSE;
+  
+  // subscribe variable
+  uint16_t subscribe_topic = NOTHING;
+  
+  // simulation variables
+  uint16_t simulation = CONNECT;
   
   // function to initialize the communication channels
   // only used by the PANC
   void initialize_communication_channels(){
-  	for(int i = 0; i < 8; i++){
-  	  communicaiton_channel_t communication_channel;
-  	  
+    int i = 0;
+    communication_channel_t communication_channel;
+    
+  	while(i < 8){
   	  communication_channel.id = i+2;
   	  communication_channel.status = 0;
   	  communication_channel.subscribed_topic = NOTHING;
   	  
   	  communication_channels[i] = communication_channel;
+  	  
+  	  i++;
   	}
   }
   
@@ -66,26 +79,30 @@ implementation {
   // functions to send messages
   
   void send_connect_message(){
-  	dbg("radio_pack", "sending a connect message\n");
   	msg_t *connect_message;
-    connect_message = (msg_t*)call Packet.getPayload(&packet, sizeof(msg_t));
+  	
+  	dbg("radio_pack", "sending a connect message\n");
+  	
+    connect_message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
     
     connect_message->type = CONNECT;
     
     // send the message to node 1 (PANC)
-    generate_send(1, &connect_message, 2);
+    generate_send(1, &packet_buf, 2);
   }
   
   void send_subscribe_message(nx_uint16_t topic){
-  	dbg("radio_pack", "sending a subscribe message\n");
   	msg_t *subscribe_message;
-    subscribe_message = (msg_t*)call Packet.getPayload(&packet, sizeof(msg_t));
+  	
+  	dbg("radio_pack", "sending a subscribe message\n");
+  	
+    subscribe_message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
     
     subscribe_message->type = SUBSCRIBE;
     subscribe_message->topic = topic;
     
     // send the message to node 1 (PANC)
-    generate_send(1, &subscribe_message, 2);
+    generate_send(1, &packet_buf, 2);
   }
   
   
@@ -134,7 +151,7 @@ implementation {
   
   bool actual_send (uint16_t address, message_t* packet){
 	if(!locked){
-	  if (call AMSend.send(address, packet, sizeof(radio_route_msg_t)) == SUCCESS) {
+	  if (call AMSend.send(address, packet, sizeof(msg_t)) == SUCCESS) {
 		dbg("radio_send", "Sending packet");
 		locked = TRUE;
 		dbg_clear("radio_send", " at time %s \n", sim_time_string());
@@ -153,13 +170,13 @@ implementation {
   event void AMControl.startDone(error_t err) {
 	if (err == SUCCESS) {
 	  if (TOS_NODE_ID == 1){
-		dbg("radio", "PANC radio start done");
+		dbg("radio", "PANC radio start done\n");
 		initialize_communication_channels();
 	  }
 	  else{
-	  	dbg("radio", "Node %d: radio on\n", TOS_NODE_ID);
+	  	dbg("radio", "Node %d: radio start done\n", TOS_NODE_ID);
 	  	// wait 2s and then send a connect message
-	  	timer3.startOneShot(2000);
+	  	call Timer3.startOneShot(2000);
 	  }
 	}
 	else {
@@ -174,15 +191,17 @@ implementation {
   
   event void Timer1.fired() {
 	// timer used to wait for acks of connect messages
-	if(connect_ack = false){
+	dbg("timer", "node %d did not receive a CONNACK in time\n", TOS_NODE_ID);
+	if(connect_acked == FALSE){
 		send_connect_message();
 	}
   }
   
   event void Timer2.fired() {
 	// timer used to wait for acks of subscribe messages
-	if(subscribe_ack = false){
-		send_subscribe_message();
+    dbg("timer", "node %d did not receive a SUBACK in time\n", TOS_NODE_ID);
+	if(subscribe_acked == FALSE){
+		send_subscribe_message(subscribe_topic);
 	}
   }
   
@@ -202,29 +221,32 @@ implementation {
 	* Implement the LED logic and print LED status on Debug
 	*/
 	
-    
+    return bufPtr;
   }
 
   event void AMSend.sendDone(message_t* bufPtr, error_t error) {
-    if(error == SUCCESS){
-	  dbg("radio_send", "Packet sent...");
+    msg_t *message;
+  
+    if(error == SUCCESS){      
+	  dbg("radio_send", "Packet sent...\n");
 	  dbg_clear("radio_send", " at time %s \n", sim_time_string());
 	  
-	  msg_t *message;
-	  message = (msg_t*)call Packet.getPayload(&packet, sizeof(msg_t));
+	  message = (msg_t*)call Packet.getPayload(&packet_buf, sizeof(msg_t));
 	  
-	  if(msg->type == CONNECT){
-	  	connect_acked = false;
+	  if(message->type == CONNECT){
+	    dbg("radio_send", "packet sent was of type CONNECT\n");
+	  	connect_acked = FALSE;
 	  	
 	  	// wait 1s to receive an ack for the connect message
-	  	call timer1.startOneShot(1000);
+	  	call Timer1.startOneShot(1000);
 	  }
 	  
-	  if(msg->type == SUBSCRIBE){
-	  	subscribe_acked = false;
+	  if(message->type == SUBSCRIBE){
+	  	dbg("radio_send", "packet sent was of type SUBSCRIBE\n");
+	  	subscribe_acked = FALSE;
 	  	
 	  	// wait 1s to receive an ack for the subscribe message
-	  	call timer2.startOneShot(1000);
+	  	call Timer2.startOneShot(1000);
 	  }
 	  
 	}else
