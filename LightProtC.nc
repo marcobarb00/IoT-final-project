@@ -15,12 +15,15 @@ module LightProtC @safe() {
   uses {
   
     /****** INTERFACES *****/
-	interface Boot;
-
-    //interfaces for communication
-	//interface for timers
-	//interface for LED
-    //other interfaces, if needed
+    interface Boot;
+    interface Receive;
+    interface AMSend;
+    interface Timer<TMilli> as Timer0;
+    interface Timer<TMilli> as Timer1; // used for waiting the ack of connect messages
+    interface Timer<TMilli> as Timer2; // used for waiting the ack of subscribe messages
+    interface Timer<TMilli> as Timer3; // used simulation
+    interface SplitControl as AMControl;
+    interface Packet;
   }
 }
 implementation {
@@ -42,9 +45,48 @@ implementation {
   bool actual_send (uint16_t address, message_t* packet);
   bool generate_send (uint16_t address, message_t* packet, uint8_t type);
   
+  // communication channels
+  communication_channel_t comunication_channels[8];
+  
+  // function to initialize the communication channels
+  // only used by the PANC
+  void initialize_communication_channels(){
+  	for(int i = 0; i < 8; i++){
+  	  communicaiton_channel_t communication_channel;
+  	  
+  	  communication_channel.id = i+2;
+  	  communication_channel.status = 0;
+  	  communication_channel.subscribed_topic = NOTHING;
+  	  
+  	  communication_channels[i] = communication_channel;
+  	}
+  }
   
   
+  // functions to send messages
   
+  void send_connect_message(){
+  	dbg("radio_pack", "sending a connect message\n");
+  	msg_t *connect_message;
+    connect_message = (msg_t*)call Packet.getPayload(&packet, sizeof(msg_t));
+    
+    connect_message->type = CONNECT;
+    
+    // send the message to node 1 (PANC)
+    generate_send(1, &connect_message, 2);
+  }
+  
+  void send_subscribe_message(nx_uint16_t topic){
+  	dbg("radio_pack", "sending a subscribe message\n");
+  	msg_t *subscribe_message;
+    subscribe_message = (msg_t*)call Packet.getPayload(&packet, sizeof(msg_t));
+    
+    subscribe_message->type = SUBSCRIBE;
+    subscribe_message->topic = topic;
+    
+    // send the message to node 1 (PANC)
+    generate_send(1, &subscribe_message, 2);
+  }
   
   
   bool generate_send (uint16_t address, message_t* packet, uint8_t type){
@@ -91,10 +133,15 @@ implementation {
   }
   
   bool actual_send (uint16_t address, message_t* packet){
-	/*
-	* Implement here the logic to perform the actual send of the packet using the tinyOS interfaces
-	*/
-	  
+	if(!locked){
+	  if (call AMSend.send(address, packet, sizeof(radio_route_msg_t)) == SUCCESS) {
+		dbg("radio_send", "Sending packet");
+		locked = TRUE;
+		dbg_clear("radio_send", " at time %s \n", sim_time_string());
+		return TRUE;
+	  }
+	}
+	return FALSE;
   }
   
   
@@ -111,7 +158,8 @@ implementation {
 	  }
 	  else{
 	  	dbg("radio", "Node %d: radio on\n", TOS_NODE_ID);
-	  	// simulate packets
+	  	// wait 2s and then send a connect message
+	  	timer3.startOneShot(2000);
 	  }
 	}
 	else {
@@ -125,9 +173,24 @@ implementation {
   }
   
   event void Timer1.fired() {
-	/*
-	* Implement here the logic to trigger the Node 1 to send the first REQ packet
-	*/
+	// timer used to wait for acks of connect messages
+	if(connect_ack = false){
+		send_connect_message();
+	}
+  }
+  
+  event void Timer2.fired() {
+	// timer used to wait for acks of subscribe messages
+	if(subscribe_ack = false){
+		send_subscribe_message();
+	}
+  }
+  
+  event void Timer3.fired() {
+    // timer used for simulation purposes
+	if(simulation == CONNECT){
+		send_connect_message();
+	}
   }
 
   event message_t* Receive.receive(message_t* bufPtr, 
@@ -146,6 +209,24 @@ implementation {
     if(error == SUCCESS){
 	  dbg("radio_send", "Packet sent...");
 	  dbg_clear("radio_send", " at time %s \n", sim_time_string());
+	  
+	  msg_t *message;
+	  message = (msg_t*)call Packet.getPayload(&packet, sizeof(msg_t));
+	  
+	  if(msg->type == CONNECT){
+	  	connect_acked = false;
+	  	
+	  	// wait 1s to receive an ack for the connect message
+	  	call timer1.startOneShot(1000);
+	  }
+	  
+	  if(msg->type == SUBSCRIBE){
+	  	subscribe_acked = false;
+	  	
+	  	// wait 1s to receive an ack for the subscribe message
+	  	call timer2.startOneShot(1000);
+	  }
+	  
 	}else
 	  dbg("radio_send", "there was an error sending the packet\n");
 	  
