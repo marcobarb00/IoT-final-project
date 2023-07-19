@@ -8,10 +8,10 @@
  
  
 #include "Timer.h"
-#include "RadioRoute.h"
+#include "LightProt.h"
 
 
-module RadioRouteC @safe() {
+module LightProtC @safe() {
   uses {
   
     /****** INTERFACES *****/
@@ -100,15 +100,28 @@ implementation {
   
   event void Boot.booted() {
     dbg("boot","Application booted.\n");
-    /* Fill it ... */
+    call AMControl.start();
   }
 
   event void AMControl.startDone(error_t err) {
-	/* Fill it ... */
+	if (err == SUCCESS) {
+	  if (TOS_NODE_ID == 1){
+		dbg("radio", "PANC radio start done");
+		initialize_communication_channels();
+	  }
+	  else{
+	  	dbg("radio", "Node %d: radio on\n", TOS_NODE_ID);
+	  	// simulate packets
+	  }
+	}
+	else {
+	  dbgerror("radio", "Node %d: radio failed to start, retrying...\n", TOS_NODE_ID);
+	  call AMControl.start();
+	}
   }
 
   event void AMControl.stopDone(error_t err) {
-    /* Fill it ... */
+	dbg("radio", "node %d: radio stopped\n", TOS_NODE_ID);
   }
   
   event void Timer1.fired() {
@@ -130,9 +143,13 @@ implementation {
   }
 
   event void AMSend.sendDone(message_t* bufPtr, error_t error) {
-	/* This event is triggered when a message is sent 
-	*  Check if the packet is sent 
-	*/ 
+    if(error == SUCCESS){
+	  dbg("radio_send", "Packet sent...");
+	  dbg_clear("radio_send", " at time %s \n", sim_time_string());
+	}else
+	  dbg("radio_send", "there was an error sending the packet\n");
+	  
+	locked = FALSE;
   }
 }
 
